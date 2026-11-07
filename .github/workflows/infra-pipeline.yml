@@ -70,3 +70,9 @@ jobs:
 
       - name: Verify ArgoCD Pods
         run: kubectl get pods -n argocd
+
+      - name: Verify ArgoCD Installation
+        run: |
+          helm list -n argocd
+          kubectl get pods -n argocd
+          kubectl get applications -n argocd
