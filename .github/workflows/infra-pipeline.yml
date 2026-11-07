@@ -73,6 +73,7 @@ jobs:
 
       - name: Verify ArgoCD Installation
         run: |
-          helm list -n argocd
+          terraform state list
+          kubectl get namespace argocd
           kubectl get pods -n argocd
-          kubectl get applications -n argocd
+          kubectl get deployments -n argocd
