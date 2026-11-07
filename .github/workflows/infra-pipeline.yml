@@ -59,3 +59,8 @@ jobs:
 
       - name: Terraform Apply
         run: terraform apply -input=false -lock-timeout=5m -auto-approve tfplan
+
+      - name: Verify ArgoCD Pods
+        run: |
+          aws eks update-kubeconfig --region ap-southeast-2 --name nodejs-eks-cluster
+          kubectl get pods -n argocd
