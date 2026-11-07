@@ -1,4 +1,3 @@
-
 name: Terraform Infrastructure Pipeline
 
 on:
@@ -22,7 +21,9 @@ concurrency:
 jobs:
   terraform:
     name: Terraform Plan and Apply
+
     runs-on: [self-hosted, Windows, X64]
+
     timeout-minutes: 60
 
     defaults:
@@ -48,7 +49,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ap-southeast-2
 
       - name: Terraform Init
         run: terraform init -input=false
@@ -67,9 +68,6 @@ jobs:
 
       - name: Configure EKS Access
         run: aws eks update-kubeconfig --region ap-southeast-2 --name nodejs-eks-cluster
-
-      - name: Verify ArgoCD Pods
-        run: kubectl get pods -n argocd
 
       - name: Verify ArgoCD Installation
         run: |
