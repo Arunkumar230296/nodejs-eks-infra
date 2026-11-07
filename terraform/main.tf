@@ -1,9 +1,14 @@
-# Get available Availability Zones
+# Pin two Sydney Availability Zones
 data "aws_availability_zones" "available" {
   state = "available"
+
+  filter {
+    name   = "zone-id"
+    values = ["apse2-az1", "apse2-az2"]
+  }
 }
 
-# Create VPC
+# VPC
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
@@ -14,13 +19,21 @@ resource "aws_vpc" "main" {
   }
 }
 
-# Create two public subnets
+# Restrict default security group
+resource "aws_default_security_group" "main" {
+  vpc_id  = aws_vpc.main.id
+  ingress = []
+  egress  = []
+}
+
+# Public subnets
 resource "aws_subnet" "public" {
   count = 2
 
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  vpc_id               = aws_vpc.main.id
+  cidr_block           = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone_id = data.aws_availability_zones.available.zone_ids[count.index]
+
   map_public_ip_on_launch = true
 
   tags = {
@@ -53,7 +66,7 @@ resource "aws_route_table" "public" {
   }
 }
 
-# Associate route table with subnets
+# Route table associations
 resource "aws_route_table_association" "public" {
   count = 2
 
@@ -61,7 +74,83 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# IAM role for EKS control plane
+# VPC Flow Logs CloudWatch log group
+resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
+  name              = "/aws/vpc/${var.project_name}/flow-logs"
+  retention_in_days = 7
+}
+
+# VPC Flow Logs IAM role
+resource "aws_iam_role" "vpc_flow_logs" {
+  name = "${var.project_name}-flow-logs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "vpc-flow-logs.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+# VPC Flow Logs permissions
+resource "aws_iam_role_policy" "vpc_flow_logs" {
+  name = "${var.project_name}-flow-logs-policy"
+  role = aws_iam_role.vpc_flow_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams"
+      ]
+      Resource = "${aws_cloudwatch_log_group.vpc_flow_logs.arn}:*"
+    }]
+  })
+}
+
+# Enable VPC Flow Logs
+resource "aws_flow_log" "main" {
+  vpc_id               = aws_vpc.main.id
+  traffic_type         = "ALL"
+  log_destination_type = "cloud-watch-logs"
+  log_destination      = aws_cloudwatch_log_group.vpc_flow_logs.arn
+  iam_role_arn         = aws_iam_role.vpc_flow_logs.arn
+
+  depends_on = [
+    aws_iam_role_policy.vpc_flow_logs
+  ]
+}
+
+# KMS key for EKS secrets encryption
+resource "aws_kms_key" "eks" {
+  description             = "KMS key for EKS secrets encryption"
+  deletion_window_in_days = 7
+  enable_key_rotation     = true
+
+  tags = {
+    Name = "${var.project_name}-eks-key"
+  }
+}
+
+resource "aws_kms_alias" "eks" {
+  name          = "alias/${var.project_name}-eks"
+  target_key_id = aws_kms_key.eks.key_id
+}
+
+# EKS CloudWatch control-plane log group
+resource "aws_cloudwatch_log_group" "eks" {
+  name              = "/aws/eks/${var.cluster_name}/cluster"
+  retention_in_days = 7
+}
+
+# EKS cluster IAM role
 resource "aws_iam_role" "eks_cluster" {
   name = "${var.project_name}-cluster-role"
 
@@ -82,7 +171,25 @@ resource "aws_iam_role_policy_attachment" "eks_cluster" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
-# IAM role for worker nodes
+# EKS cluster KMS permissions
+resource "aws_iam_role_policy" "eks_kms" {
+  name = "${var.project_name}-eks-kms-policy"
+  role = aws_iam_role.eks_cluster.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "kms:CreateGrant",
+        "kms:DescribeKey"
+      ]
+      Resource = aws_kms_key.eks.arn
+    }]
+  })
+}
+
+# EKS worker node IAM role
 resource "aws_iam_role" "eks_nodes" {
   name = "${var.project_name}-node-role"
 
@@ -113,26 +220,42 @@ resource "aws_iam_role_policy_attachment" "node_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
 }
 
-# Create EKS cluster
+# EKS cluster
 resource "aws_eks_cluster" "main" {
   name     = var.cluster_name
   role_arn = aws_iam_role.eks_cluster.arn
   version  = var.kubernetes_version
 
   vpc_config {
-    subnet_ids              = aws_subnet.public[*].id
+    subnet_ids = aws_subnet.public[*].id
+
     endpoint_public_access  = true
-    endpoint_private_access = false
+    endpoint_private_access = true
+
+    public_access_cidrs = ["49.37.213.230/32"]
+  }
+
+  encryption_config {
+    provider {
+      key_arn = aws_kms_key.eks.arn
+    }
+
+    resources = ["secrets"]
   }
 
   enabled_cluster_log_types = [
     "api",
     "audit",
-    "authenticator"
+    "authenticator",
+    "controllerManager",
+    "scheduler"
   ]
 
+  # Wait for IAM permissions and CloudWatch log group
   depends_on = [
-    aws_iam_role_policy_attachment.eks_cluster
+    aws_iam_role_policy_attachment.eks_cluster,
+    aws_iam_role_policy.eks_kms,
+    aws_cloudwatch_log_group.eks
   ]
 
   tags = {
@@ -140,7 +263,7 @@ resource "aws_eks_cluster" "main" {
   }
 }
 
-# Create managed worker node group
+# EKS managed worker node group
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${var.project_name}-workers"
