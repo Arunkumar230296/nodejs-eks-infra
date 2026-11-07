@@ -36,6 +36,11 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.34.0
+
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
@@ -60,7 +65,8 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -input=false -lock-timeout=5m -auto-approve tfplan
 
+      - name: Configure EKS Access
+        run: aws eks update-kubeconfig --region ap-southeast-2 --name nodejs-eks-cluster
+
       - name: Verify ArgoCD Pods
-        run: |
-          aws eks update-kubeconfig --region ap-southeast-2 --name nodejs-eks-cluster
-          kubectl get pods -n argocd
+        run: kubectl get pods -n argocd
