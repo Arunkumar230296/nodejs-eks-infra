@@ -1,3 +1,4 @@
+
 name: Terraform Infrastructure Pipeline
 
 on:
@@ -18,10 +19,15 @@ permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: terraform-infrastructure
+  cancel-in-progress: false
+
 jobs:
   terraform:
-    name: Terraform Validation
+    name: Terraform Plan and Apply
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     defaults:
       run:
@@ -31,14 +37,26 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Configure Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
-      - name: Terraform Init
-        run: terraform init -backend=false
+      - name: Configure AWS Credentials
+        if: github.event_name != 'pull_request'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Terraform Init for Pull Request
+        if: github.event_name == 'pull_request'
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform Init with S3 Backend
+        if: github.event_name != 'pull_request'
+        run: terraform init -input=false
 
       - name: Terraform Validate
         run: terraform validate
@@ -50,13 +68,14 @@ jobs:
           framework: terraform
           soft_fail: true
 
-      - name: Configure AWS Credentials
-        if: github.event_name != 'pull_request'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
       - name: Verify AWS Identity
         if: github.event_name != 'pull_request'
         run: aws sts get-caller-identity
+
+      - name: Terraform Plan
+        if: github.event_name != 'pull_request'
+        run: terraform plan -input=false -lock-timeout=5m -out=tfplan
+
+      - name: Terraform Apply
+        if: github.event_name != 'pull_request'
+        run: terraform apply -input=false -lock-timeout=5m -auto-approve tfplan
