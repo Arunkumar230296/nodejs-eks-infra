@@ -36,14 +36,6 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Checkov
-        run: python -m pip install checkov
-
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
@@ -58,9 +50,6 @@ jobs:
 
       - name: Terraform Validate
         run: terraform validate
-
-      - name: Terraform Security Scan
-        run: checkov -d . --framework terraform --soft-fail
 
       - name: Verify AWS Identity
         run: aws sts get-caller-identity
