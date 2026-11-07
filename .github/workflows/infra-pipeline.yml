@@ -9,10 +9,6 @@ on:
       - "terraform/**"
       - ".github/workflows/infra-pipeline.yml"
 
-  pull_request:
-    branches:
-      - main
-
   workflow_dispatch:
 
 permissions:
@@ -40,42 +36,37 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Checkov
+        run: python -m pip install checkov
+
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
       - name: Configure AWS Credentials
-        if: github.event_name != 'pull_request'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Terraform Init for Pull Request
-        if: github.event_name == 'pull_request'
-        run: terraform init -backend=false -input=false
-
-      - name: Terraform Init with S3 Backend
-        if: github.event_name != 'pull_request'
+      - name: Terraform Init
         run: terraform init -input=false
 
       - name: Terraform Validate
         run: terraform validate
 
       - name: Terraform Security Scan
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: terraform
-          framework: terraform
-          soft_fail: true
+        run: checkov -d . --framework terraform --soft-fail
 
       - name: Verify AWS Identity
-        if: github.event_name != 'pull_request'
         run: aws sts get-caller-identity
 
       - name: Terraform Plan
-        if: github.event_name != 'pull_request'
         run: terraform plan -input=false -lock-timeout=5m -out=tfplan
 
       - name: Terraform Apply
-        if: github.event_name != 'pull_request'
         run: terraform apply -input=false -lock-timeout=5m -auto-approve tfplan
